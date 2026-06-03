@@ -32,14 +32,12 @@ fn euclidean_distance(a: &[f32; 14], b: &[f32; 14]) -> f32 {
 /// VP-Tree KNN search finding the 5 nearest neighbors.
 /// Prunes massive parts of the tree to achieve O(log N) instead of O(N).
 pub fn knn_search(query: &[f32; 14], records: &[ReferenceRecord]) -> KnnResult {
-    // Max-heap of 5 elements: (distance, label)
-    // We maintain the worst (largest distance) at index 0 for quick comparison.
     let mut heap: [(f32, u8); 5] = [(f32::MAX, 0); 5];
-    let mut heap_max = f32::MAX; // cached max distance in heap
+    let mut heap_max = f32::MAX; 
+    let mut visits = 0u32;
 
     if !records.is_empty() {
-        // Root is always at index 0 based on our build_index algorithm
-        vp_search(0, query, records, &mut heap, &mut heap_max);
+        vp_search(0, query, records, &mut heap, &mut heap_max, &mut visits);
     }
 
     KnnResult {
@@ -59,10 +57,13 @@ fn vp_search(
     records: &[ReferenceRecord],
     heap: &mut [(f32, u8); 5],
     heap_max: &mut f32,
+    visits: &mut u32,
 ) {
-    if node_idx == NULL_CHILD {
+    // Early stopping (ANN limit) to guarantee sub-millisecond latency
+    if node_idx == NULL_CHILD || *visits > 10_000 {
         return;
     }
+    *visits += 1;
 
     let node = &records[node_idx as usize];
     let d = euclidean_distance(query, &node.vector);
@@ -98,14 +99,14 @@ fn vp_search(
     };
 
     // Always search the most promising child first
-    vp_search(first, query, records, heap, heap_max);
+    vp_search(first, query, records, heap, heap_max, visits);
 
     // Pruning rule: search the other child only if the distance to the boundary
     // is smaller than the worst distance in our heap (i.e., the search sphere 
     // intersects the VP boundary)
     let dist_to_boundary = (d - node.threshold).abs();
     if dist_to_boundary <= *heap_max {
-        vp_search(second, query, records, heap, heap_max);
+        vp_search(second, query, records, heap, heap_max, visits);
     }
 }
 
