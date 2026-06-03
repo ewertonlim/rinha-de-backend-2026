@@ -1,0 +1,7 @@
+{
+    "participants": ["Ewerton Lim"],
+    "social": ["https://github.com/ewertonlim"],
+    "source-code-repo": "https://github.com/ewertonlim/rinha-de-backend-2026",
+    "stack": ["rust", "nginx", "vp-tree", "mmap"],
+    "open_to_work": true
+}
