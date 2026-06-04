@@ -21,7 +21,7 @@ services:
       - rinha
 
   api1:
-    build: .
+    image: ewertonlim/rinha-api:latest
     hostname: api1
     cpuset: "0"
     network_mode: "none"
@@ -47,7 +47,7 @@ services:
           memory: "165MB"
 
   api2:
-    build: .
+    image: ewertonlim/rinha-api:latest
     hostname: api2
     cpuset: "2"
     network_mode: "none"
