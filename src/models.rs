@@ -65,23 +65,27 @@ pub struct NormalizationConfig {
     pub max_merchant_avg_amount: f64,
 }
 
-/// A single reference record / VP-Tree node.
-/// Layout: 14 × f32 (56 bytes) + 1 f32 (4 bytes) + 2 u32 (8 bytes) + u8 label + 3 bytes padding = 72 bytes total.
-#[repr(C)]
-#[derive(Clone, Copy)]
+#[repr(C, align(32))]
+#[derive(Debug, Clone, Copy)]
 pub struct ReferenceRecord {
-    pub vector: [f32; 14],
-    pub threshold: f32,
-    pub left_child: u32,
-    pub right_child: u32,
-    pub label: u8, // 1 = fraud, 0 = legit
-    pub _pad: [u8; 3],
+    pub vector: [i16; 16], // 32 bytes
 }
 
-pub const NULL_CHILD: u32 = u32::MAX;
-
-const _: () = assert!(std::mem::size_of::<ReferenceRecord>() == 72);
+const _: () = assert!(std::mem::size_of::<ReferenceRecord>() == 32);
 
 // Safety: ReferenceRecord is repr(C) with only primitive fields and explicit padding.
 unsafe impl bytemuck::Pod for ReferenceRecord {}
 unsafe impl bytemuck::Zeroable for ReferenceRecord {}
+
+/// Cluster metadata for IVF index: offset and count of records in each cluster.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ClusterEntry {
+    pub offset: u32,
+    pub count: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<ClusterEntry>() == 8);
+
+unsafe impl bytemuck::Pod for ClusterEntry {}
+unsafe impl bytemuck::Zeroable for ClusterEntry {}

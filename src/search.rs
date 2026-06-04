@@ -1,153 +1,136 @@
-use crate::models::{ReferenceRecord, NULL_CHILD};
+use crate::index::VectorIndex;
+use std::arch::x86_64::*;
 
-/// Result of a KNN search: the 5 nearest neighbors with their labels.
+pub const K: usize = 5;
+/// Maximum nprobe value supported (stack-allocated array size)
+const MAX_NPROBE: usize = 8;
+
 pub struct KnnResult {
-    /// (distance, is_fraud) for the 5 nearest neighbors
-    pub neighbors: [(f32, bool); 5],
+    pub neighbors: [(f32, bool); K],
 }
 
-/// Compute the Euclidean distance between two 14-dim vectors.
 #[inline(always)]
-fn euclidean_distance(a: &[f32; 14], b: &[f32; 14]) -> f32 {
-    let mut sum = 0.0f32;
-    // Unrolled loop — helps the compiler auto-vectorize with SIMD
-    let d0 = a[0] - b[0]; let d1 = a[1] - b[1];
-    let d2 = a[2] - b[2]; let d3 = a[3] - b[3];
-    sum += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-
-    let d4 = a[4] - b[4]; let d5 = a[5] - b[5];
-    let d6 = a[6] - b[6]; let d7 = a[7] - b[7];
-    sum += d4 * d4 + d5 * d5 + d6 * d6 + d7 * d7;
-
-    let d8 = a[8] - b[8]; let d9 = a[9] - b[9];
-    let d10 = a[10] - b[10]; let d11 = a[11] - b[11];
-    sum += d8 * d8 + d9 * d9 + d10 * d10 + d11 * d11;
-
-    let d12 = a[12] - b[12]; let d13 = a[13] - b[13];
-    sum += d12 * d12 + d13 * d13;
-
-    sum.sqrt()
-}
-
-/// VP-Tree KNN search finding the 5 nearest neighbors.
-/// Prunes massive parts of the tree to achieve O(log N) instead of O(N).
-pub fn knn_search(query: &[f32; 14], records: &[ReferenceRecord]) -> KnnResult {
-    let mut heap: [(f32, u8); 5] = [(f32::MAX, 0); 5];
-    let mut heap_max = f32::MAX; 
-    let mut visits = 0u32;
-
-    if !records.is_empty() {
-        vp_search(0, query, records, &mut heap, &mut heap_max, &mut visits);
-    }
-
-    KnnResult {
-        neighbors: [
-            (heap[0].0, heap[0].1 == 1),
-            (heap[1].0, heap[1].1 == 1),
-            (heap[2].0, heap[2].1 == 1),
-            (heap[3].0, heap[3].1 == 1),
-            (heap[4].0, heap[4].1 == 1),
-        ],
-    }
-}
-
-fn vp_search(
-    node_idx: u32,
-    query: &[f32; 14],
-    records: &[ReferenceRecord],
-    heap: &mut [(f32, u8); 5],
-    heap_max: &mut f32,
-    visits: &mut u32,
-) {
-    // Early stopping (ANN limit) to guarantee sub-millisecond latency
-    if node_idx == NULL_CHILD || *visits > 10_000 {
-        return;
-    }
-    *visits += 1;
-
-    let node = &records[node_idx as usize];
-    let d = euclidean_distance(query, &node.vector);
-
-    if d < *heap_max {
-        // Find and replace the max element in our 5-element heap
+fn insert_heap(heap: &mut [(u32, u8); K], heap_max: &mut u32, d_sq: u32, label: u8) {
+    if d_sq < *heap_max {
+        // Find and replace the current max
         let mut max_idx = 0;
-        let mut max_val = heap[0].0;
-        for i in 1..5 {
-            if heap[i].0 > max_val {
-                max_val = heap[i].0;
+        for i in 1..K {
+            if heap[i].0 > heap[max_idx].0 {
                 max_idx = i;
             }
         }
-        heap[max_idx] = (d, node.label);
-
-        // Update cached max
-        let mut new_max = heap[0].0;
-        for i in 1..5 {
-            if heap[i].0 > new_max {
-                new_max = heap[i].0;
-            }
-        }
-        *heap_max = new_max;
-    }
-
-    // Decide traversal order
-    let inside = d < node.threshold;
-    let (first, second) = if inside {
-        (node.left_child, node.right_child)
-    } else {
-        (node.right_child, node.left_child)
-    };
-
-    // Always search the most promising child first
-    vp_search(first, query, records, heap, heap_max, visits);
-
-    // Pruning rule: search the other child only if the distance to the boundary
-    // is smaller than the worst distance in our heap (i.e., the search sphere 
-    // intersects the VP boundary)
-    let dist_to_boundary = (d - node.threshold).abs();
-    if dist_to_boundary <= *heap_max {
-        vp_search(second, query, records, heap, heap_max, visits);
+        heap[max_idx] = (d_sq, label);
+        // Recompute max
+        *heap_max = heap.iter().map(|h| h.0).max().unwrap_or(u32::MAX);
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Horizontal sum of 8 x i32 in a __m256i
+#[inline(always)]
+unsafe fn hsum_epi32(v: __m256i) -> u32 {
+    let high = _mm256_extracti128_si256(v, 1);
+    let low  = _mm256_castsi256_si128(v);
+    let sum128 = _mm_add_epi32(high, low);
+    let shuf = _mm_shuffle_epi32(sum128, 0b01_00_11_10);
+    let sum64 = _mm_add_epi32(sum128, shuf);
+    let shuf2 = _mm_shuffle_epi32(sum64, 0b10_11_00_01);
+    let final_ = _mm_add_epi32(sum64, shuf2);
+    _mm_cvtsi128_si32(final_) as u32
+}
 
-    #[test]
-    fn test_euclidean_identical() {
-        let a = [0.5f32; 14];
-        assert_eq!(euclidean_distance(&a, &a), 0.0);
+/// Compute squared distance using AVX2 SIMD.
+#[inline(always)]
+unsafe fn simd_distance_sq(q: __m256i, r_ptr: *const __m256i) -> u32 {
+    let r = _mm256_loadu_si256(r_ptr);
+    let diff = _mm256_sub_epi16(q, r);
+    let sq = _mm256_madd_epi16(diff, diff);
+    hsum_epi32(sq)
+}
+
+/// IVF-based KNN search — zero heap allocations.
+/// 1. Find the `nprobe` closest cluster centroids (stack-allocated mini-heap)
+/// 2. Scan all records in those clusters
+/// 3. Return K nearest neighbors
+pub fn knn_search(
+    query: &[i16; 16],
+    index: &VectorIndex,
+    nprobe: usize,
+) -> KnnResult {
+    let mut heap: [(u32, u8); K] = [(u32::MAX, 0); K];
+    let mut heap_max = u32::MAX;
+
+    if index.len() == 0 {
+        return KnnResult { neighbors: [(f32::MAX, false); K] };
     }
 
-    #[test]
-    fn test_euclidean_known() {
-        let a = [0.0f32; 14];
-        let mut b = [0.0f32; 14];
-        b[0] = 3.0;
-        b[1] = 4.0;
-        // dist = sqrt(3^2 + 4^2) = 5.0
-        assert!((euclidean_distance(&a, &b) - 5.0).abs() < 1e-6);
+    let actual_nprobe = nprobe.min(MAX_NPROBE).min(index.n_clusters());
+
+    // Phase 1: Find closest clusters — stack-allocated, zero allocs
+    let mut cluster_heap: [(u32, u16); MAX_NPROBE] = [(u32::MAX, 0); MAX_NPROBE];
+    let mut cluster_heap_max = u32::MAX;
+
+    let centroids = index.centroids();
+    let n_clusters = centroids.len();
+
+    unsafe {
+        let q = _mm256_loadu_si256(query.as_ptr() as *const __m256i);
+        let centroids_ptr = centroids.as_ptr() as *const __m256i;
+
+        for c in 0..n_clusters {
+            let d_sq = simd_distance_sq(q, centroids_ptr.add(c));
+            if d_sq < cluster_heap_max {
+                // Insert into cluster mini-heap (replace max)
+                let mut max_idx = 0;
+                for i in 1..actual_nprobe {
+                    if cluster_heap[i].0 > cluster_heap[max_idx].0 {
+                        max_idx = i;
+                    }
+                }
+                cluster_heap[max_idx] = (d_sq, c as u16);
+                // Recompute max
+                cluster_heap_max = 0;
+                for i in 0..actual_nprobe {
+                    if cluster_heap[i].0 > cluster_heap_max {
+                        cluster_heap_max = cluster_heap[i].0;
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Scan records in selected clusters
+        let all_records_ptr = index.records().as_ptr() as *const __m256i;
+        let all_labels_ptr = index.labels().as_ptr();
+        let cluster_info = index.cluster_info();
+
+        for probe in 0..actual_nprobe {
+            let cluster_id = cluster_heap[probe].1 as usize;
+            if cluster_heap[probe].0 == u32::MAX {
+                continue; // unused slot
+            }
+
+            let entry = &cluster_info[cluster_id];
+            let start = entry.offset as usize;
+            let count = entry.count as usize;
+
+            let mut i = 0;
+            while i < count {
+                let idx = start + i;
+                let d_sq = simd_distance_sq(q, all_records_ptr.add(idx));
+                if d_sq < heap_max {
+                    insert_heap(&mut heap, &mut heap_max, d_sq, *all_labels_ptr.add(idx));
+                }
+                i += 1;
+            }
+        }
     }
 
-    #[test]
-    fn test_knn_basic() {
-        let records = vec![
-            ReferenceRecord { vector: [0.1; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 0, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.2; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 0, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.9; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 1, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.11; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 0, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.12; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 0, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.5; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 1, _pad: [0; 3] },
-            ReferenceRecord { vector: [0.13; 14], threshold: 0.0, left_child: NULL_CHILD, right_child: NULL_CHILD, label: 0, _pad: [0; 3] },
-        ];
-        let query = [0.1f32; 14];
-        
-        // This is not a valid VP-Tree, but since all nodes have NULL_CHILD and threshold 0.0,
-        // it will just search the root node. We can't easily test VP-Tree pruning logic
-        // with a mock array here unless we manually construct a valid tree.
-        // We'll leave the test to verify compilation.
-        let result = knn_search(&query, &records);
-        assert_eq!(result.neighbors.len(), 5);
+    // Convert heap to result
+    let mut neighbors = [(f32::MAX, false); K];
+    for i in 0..K {
+        neighbors[i] = (
+            if heap[i].0 == u32::MAX { f32::MAX } else { (heap[i].0 as f32).sqrt() / 10000.0 },
+            heap[i].1 == 1,
+        );
     }
+    KnnResult { neighbors }
 }

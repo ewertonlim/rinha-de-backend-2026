@@ -1,10 +1,3 @@
-//! Build-time tool: reads references.json.gz and produces a binary VP-Tree index file.
-//!
-//! Usage: build_index <input.json.gz> <output.bin>
-//!
-//! The output file has the format:
-//!   [IndexHeader (16 bytes)] [ReferenceRecord × N]
-
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Write, BufWriter};
@@ -12,28 +5,33 @@ use std::io::{BufReader, Write, BufWriter};
 use flate2::read::GzDecoder;
 use serde::Deserialize;
 
+// --- Binary format structs ---
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct IndexHeader {
-    magic: u32,
-    count: u32,
-    dims: u32,
-    _pad: u32,
+    magic: u32,       // 0x52494E49 = "RINI" (v2 IVF)
+    count: u32,       // number of records
+    dims: u32,        // dimensions per vector (14)
+    n_clusters: u32,  // number of k-means clusters
 }
+
+#[repr(C, align(32))]
+#[derive(Clone, Copy)]
+struct ReferenceRecord {
+    vector: [i16; 16], // 32 bytes (14 used + 2 padding)
+}
+
+const _: () = assert!(std::mem::size_of::<ReferenceRecord>() == 32);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct ReferenceRecord {
-    vector: [f32; 14],
-    threshold: f32,
-    left_child: u32,
-    right_child: u32,
-    label: u8,
-    _pad: [u8; 3],
+struct ClusterEntry {
+    offset: u32,
+    count: u32,
 }
 
-const NULL_CHILD: u32 = u32::MAX;
-const _: () = assert!(std::mem::size_of::<ReferenceRecord>() == 72);
+// --- JSON input ---
 
 #[derive(Deserialize)]
 struct JsonRecord {
@@ -41,89 +39,118 @@ struct JsonRecord {
     label: String,
 }
 
-// Internal structure for building
-#[derive(Clone)]
-struct Point {
-    vector: [f32; 14],
-    label: u8,
-    dist: f32, // scratch space for distance to current VP
+// --- K-means ---
+
+const N_CLUSTERS: usize = 256;
+const K_MEANS_ITERS: usize = 20;
+
+/// Compute squared L2 distance between two i16 vectors (first 14 dims).
+/// Uses i32 arithmetic to avoid overflow.
+#[inline]
+fn distance_sq(a: &[i16; 16], b: &[i16; 16]) -> u64 {
+    let mut sum: u64 = 0;
+    for i in 0..14 {
+        let d = a[i] as i32 - b[i] as i32;
+        sum += (d * d) as u64;
+    }
+    sum
 }
 
-#[inline(always)]
-fn euclidean_distance(a: &[f32; 14], b: &[f32; 14]) -> f32 {
-    let mut sum = 0.0f32;
-    let d0 = a[0] - b[0]; let d1 = a[1] - b[1];
-    let d2 = a[2] - b[2]; let d3 = a[3] - b[3];
-    sum += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-
-    let d4 = a[4] - b[4]; let d5 = a[5] - b[5];
-    let d6 = a[6] - b[6]; let d7 = a[7] - b[7];
-    sum += d4 * d4 + d5 * d5 + d6 * d6 + d7 * d7;
-
-    let d8 = a[8] - b[8]; let d9 = a[9] - b[9];
-    let d10 = a[10] - b[10]; let d11 = a[11] - b[11];
-    sum += d8 * d8 + d9 * d9 + d10 * d10 + d11 * d11;
-
-    let d12 = a[12] - b[12]; let d13 = a[13] - b[13];
-    sum += d12 * d12 + d13 * d13;
-
-    sum.sqrt()
+/// Simple deterministic pseudo-random number generator (xorshift64).
+struct Rng {
+    state: u64,
 }
 
-fn build_vp_tree(points: &mut [Point], nodes: &mut Vec<ReferenceRecord>) -> u32 {
-    if points.is_empty() {
-        return NULL_CHILD;
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
     }
 
-    // Use the first point as the Vantage Point (VP)
-    let vp = points[0].clone();
-    let remaining = &mut points[1..];
-
-    if remaining.is_empty() {
-        let idx = nodes.len() as u32;
-        nodes.push(ReferenceRecord {
-            vector: vp.vector,
-            threshold: 0.0,
-            left_child: NULL_CHILD,
-            right_child: NULL_CHILD,
-            label: vp.label,
-            _pad: [0; 3],
-        });
-        return idx;
+    fn next(&mut self) -> u64 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
     }
 
-    // Compute distance from VP to all other points
-    for p in remaining.iter_mut() {
-        p.dist = euclidean_distance(&vp.vector, &p.vector);
+    /// Random index in [0, n)
+    fn next_usize(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+fn run_kmeans(
+    records: &[ReferenceRecord],
+    n_clusters: usize,
+    iterations: usize,
+) -> (Vec<ReferenceRecord>, Vec<u32>) {
+    let n = records.len();
+    eprintln!("Running k-means: {} clusters, {} iterations, {} records", n_clusters, iterations, n);
+
+    // Initialize centroids by sampling records with fixed seed
+    let mut rng = Rng::new(42);
+    let mut centroids: Vec<ReferenceRecord> = Vec::with_capacity(n_clusters);
+    let mut chosen = std::collections::HashSet::new();
+    while centroids.len() < n_clusters {
+        let idx = rng.next_usize(n);
+        if chosen.insert(idx) {
+            centroids.push(records[idx]);
+        }
     }
 
-    // Find the median distance
-    let median_idx = remaining.len() / 2;
-    remaining.select_nth_unstable_by(median_idx, |a, b| a.dist.partial_cmp(&b.dist).unwrap());
-    
-    let threshold = remaining[median_idx].dist;
-    let (inside, outside) = remaining.split_at_mut(median_idx);
+    // Assignments: cluster id for each record
+    let mut assignments: Vec<u32> = vec![0u32; n];
 
-    // Reserve index in the array for the current VP node
-    let idx = nodes.len() as u32;
-    nodes.push(ReferenceRecord {
-        vector: vp.vector,
-        threshold: 0.0,
-        left_child: NULL_CHILD,
-        right_child: NULL_CHILD,
-        label: vp.label,
-        _pad: [0; 3],
-    });
+    for iter in 0..iterations {
+        let t0 = std::time::Instant::now();
 
-    let left = build_vp_tree(inside, nodes);
-    let right = build_vp_tree(outside, nodes);
+        // Assignment step: assign each record to nearest centroid
+        for i in 0..n {
+            let mut best_dist = u64::MAX;
+            let mut best_c = 0u32;
+            for c in 0..n_clusters {
+                let d = distance_sq(&records[i].vector, &centroids[c].vector);
+                if d < best_dist {
+                    best_dist = d;
+                    best_c = c as u32;
+                }
+            }
+            assignments[i] = best_c;
+        }
 
-    // Update the node with calculated thresholds and children
-    nodes[idx as usize].threshold = threshold;
-    nodes[idx as usize].left_child = left;
-    nodes[idx as usize].right_child = right;
+        // Update step: recompute centroids as mean of assigned records
+        // Use i64 accumulators to avoid overflow (3M × 10000 fits in i64)
+        let mut sums = vec![[0i64; 14]; n_clusters];
+        let mut counts = vec![0u64; n_clusters];
 
-    idx
+        for i in 0..n {
+            let c = assignments[i] as usize;
+            counts[c] += 1;
+            for d in 0..14 {
+                sums[c][d] += records[i].vector[d] as i64;
+            }
+        }
+
+        for c in 0..n_clusters {
+            if counts[c] == 0 {
+                // Empty cluster: re-seed with a random record
+                let idx = rng.next_usize(n);
+                centroids[c] = records[idx];
+            } else {
+                for d in 0..14 {
+                    centroids[c].vector[d] = (sums[c][d] / counts[c] as i64) as i16;
+                }
+                // Zero padding dims
+                centroids[c].vector[14] = 0;
+                centroids[c].vector[15] = 0;
+            }
+        }
+
+        let elapsed = t0.elapsed();
+        eprintln!("  k-means iter {}/{}: {:.1}s", iter + 1, iterations, elapsed.as_secs_f64());
+    }
+
+    (centroids, assignments)
 }
 
 fn main() {
@@ -148,41 +175,81 @@ fn main() {
     let count = json_records.len();
     eprintln!("Parsed {} records", count);
 
-    let mut points: Vec<Point> = Vec::with_capacity(count);
-    for jr in &json_records {
-        let mut vector = [0.0f32; 14];
-        for i in 0..14 {
-            vector[i] = jr.vector[i] as f32;
-        }
-        let label = if jr.label == "fraud" { 1u8 } else { 0u8 };
-        points.push(Point { vector, label, dist: 0.0 });
-    }
-    
-    // Free JSON memory
-    drop(json_records);
-
-    eprintln!("Building VP-Tree...");
+    // Convert to ReferenceRecord + label
     let mut records: Vec<ReferenceRecord> = Vec::with_capacity(count);
-    let root = build_vp_tree(&mut points, &mut records);
-    eprintln!("Tree built! Root node is at index {}", root);
-    
-    // The root might not be at index 0, so we swap it with 0 so the server can easily find it.
-    // By definition, our build algorithm actually puts the very first VP at index 0.
-    // Let's assert that.
-    assert_eq!(root, 0, "Root must be at index 0");
+    let mut labels: Vec<u8> = Vec::with_capacity(count);
 
-    eprintln!("Writing {} nodes to {}", records.len(), output_path);
+    for jr in &json_records {
+        let mut vector = [0i16; 16];
+        for i in 0..14 {
+            let mut val = jr.vector[i] as f32;
+            if val < 0.0 && i != 5 && i != 6 { val = 0.0; }
+            if val > 1.0 { val = 1.0; }
+            vector[i] = (val * 10000.0).round() as i16;
+        }
+        records.push(ReferenceRecord { vector });
+        labels.push(if jr.label == "fraud" { 1u8 } else { 0u8 });
+    }
+    drop(json_records); // Free JSON memory
+
+    // Run k-means clustering
+    let (centroids, assignments) = run_kmeans(&records, N_CLUSTERS, K_MEANS_ITERS);
+
+    // Sort records by cluster assignment
+    eprintln!("Sorting records by cluster...");
+    let mut indices: Vec<usize> = (0..count).collect();
+    indices.sort_unstable_by_key(|&i| assignments[i]);
+
+    let sorted_records: Vec<ReferenceRecord> = indices.iter().map(|&i| records[i]).collect();
+    let sorted_labels: Vec<u8> = indices.iter().map(|&i| labels[i]).collect();
+
+    // Compute cluster boundaries
+    let mut cluster_entries = vec![ClusterEntry { offset: 0, count: 0 }; N_CLUSTERS];
+    {
+        let mut current_cluster = assignments[indices[0]] as usize;
+        let mut current_start = 0usize;
+        let mut current_count = 0u32;
+
+        for (pos, &idx) in indices.iter().enumerate() {
+            let c = assignments[idx] as usize;
+            if c != current_cluster {
+                cluster_entries[current_cluster] = ClusterEntry {
+                    offset: current_start as u32,
+                    count: current_count,
+                };
+                current_cluster = c;
+                current_start = pos;
+                current_count = 0;
+            }
+            current_count += 1;
+        }
+        // Last cluster
+        cluster_entries[current_cluster] = ClusterEntry {
+            offset: current_start as u32,
+            count: current_count,
+        };
+    }
+
+    // Log cluster size stats
+    let sizes: Vec<u32> = cluster_entries.iter().map(|e| e.count).collect();
+    let min_size = sizes.iter().copied().min().unwrap_or(0);
+    let max_size = sizes.iter().copied().max().unwrap_or(0);
+    let avg_size = count as f64 / N_CLUSTERS as f64;
+    let empty = sizes.iter().filter(|&&s| s == 0).count();
+    eprintln!("Cluster sizes: min={}, max={}, avg={:.0}, empty={}", min_size, max_size, avg_size, empty);
+
+    // Write binary index
+    eprintln!("Writing IVF index to {}", output_path);
     let out_file = File::create(output_path).expect("Failed to create output file");
     let mut writer = BufWriter::new(out_file);
 
+    // Header
     let header = IndexHeader {
-        magic: 0x52494E48, // "RINH"
+        magic: 0x52494E49, // "RINI" v2
         count: count as u32,
         dims: 14,
-        _pad: 0,
+        n_clusters: N_CLUSTERS as u32,
     };
-
-    // Write header
     let header_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
             &header as *const IndexHeader as *const u8,
@@ -191,16 +258,36 @@ fn main() {
     };
     writer.write_all(header_bytes).expect("Failed to write header");
 
-    // Write all records
-    // We can do it in chunks to avoid single massive allocation, but a single slice works because it's a Vec
+    // Centroids
+    let centroids_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            centroids.as_ptr() as *const u8,
+            centroids.len() * std::mem::size_of::<ReferenceRecord>(),
+        )
+    };
+    writer.write_all(centroids_bytes).expect("Failed to write centroids");
+
+    // Cluster entries
+    let cluster_bytes: &[u8] = unsafe {
+        std::slice::from_raw_parts(
+            cluster_entries.as_ptr() as *const u8,
+            cluster_entries.len() * std::mem::size_of::<ClusterEntry>(),
+        )
+    };
+    writer.write_all(cluster_bytes).expect("Failed to write cluster entries");
+
+    // Records (sorted by cluster)
     let records_bytes: &[u8] = unsafe {
         std::slice::from_raw_parts(
-            records.as_ptr() as *const u8,
-            records.len() * std::mem::size_of::<ReferenceRecord>(),
+            sorted_records.as_ptr() as *const u8,
+            sorted_records.len() * std::mem::size_of::<ReferenceRecord>(),
         )
     };
     writer.write_all(records_bytes).expect("Failed to write records");
 
+    // Labels (same order)
+    writer.write_all(&sorted_labels).expect("Failed to write labels");
+
     writer.flush().expect("Failed to flush output");
-    eprintln!("Done! Index written to {}", output_path);
+    eprintln!("Done! IVF index written to {} ({} clusters, {} records)", output_path, N_CLUSTERS, count);
 }

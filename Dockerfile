@@ -17,7 +17,7 @@ COPY Cargo.toml Cargo.lock* ./
 RUN mkdir -p src/bin && \
     echo "fn main() {}" > src/main.rs && \
     echo "fn main() {}" > src/bin/build_index.rs && \
-    RUSTFLAGS="-C target-cpu=x86-64-v2" cargo build --release 2>/dev/null || true && \
+    RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release 2>/dev/null || true && \
     rm -rf src
 
 # Copy actual source code
@@ -25,7 +25,7 @@ COPY src/ src/
 RUN touch src/main.rs src/bin/build_index.rs src/models.rs src/index.rs src/search.rs src/decision.rs src/vectorize.rs
 
 # Build both binaries with optimizations
-RUN RUSTFLAGS="-C target-cpu=x86-64-v2" cargo build --release
+RUN RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
 
 # ============================================================
 # Stage 2: Build the index from references.json.gz
