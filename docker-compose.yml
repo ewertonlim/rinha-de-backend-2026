@@ -1,7 +1,6 @@
 services:
   nginx:
     image: nginx:alpine
-    cpuset: "1"
     ports:
       - "9999:9999"
     volumes:
@@ -23,7 +22,6 @@ services:
   api1:
     image: ewertonlim/rinha-api:latest
     hostname: api1
-    cpuset: "0"
     network_mode: "none"
     environment:
       - PORT=8080
@@ -31,7 +29,7 @@ services:
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - API_SOCKET=/sockets/api1.sock
-      - NPROBE=3
+      - NPROBE=2
     volumes:
       - sockets:/sockets
     healthcheck:
@@ -49,7 +47,6 @@ services:
   api2:
     image: ewertonlim/rinha-api:latest
     hostname: api2
-    cpuset: "2"
     network_mode: "none"
     environment:
       - PORT=8080
@@ -57,7 +54,7 @@ services:
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - API_SOCKET=/sockets/api2.sock
-      - NPROBE=3
+      - NPROBE=2
     volumes:
       - sockets:/sockets
     healthcheck:
@@ -78,8 +75,3 @@ networks:
 
 volumes:
   sockets:
-    driver: local
-    driver_opts:
-      type: tmpfs
-      device: tmpfs
-      o: "size=4m,uid=0,gid=0,mode=0777"
