@@ -8,7 +8,7 @@ use actix_web::{web, App, HttpResponse, HttpServer};
 use models::{FraudRequest, FraudResponse, NormalizationConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::Arc;
+
 
 /// Shared application state across all request handlers.
 struct AppState {
