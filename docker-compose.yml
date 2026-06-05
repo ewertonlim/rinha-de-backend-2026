@@ -1,6 +1,7 @@
 services:
   haproxy:
     image: haproxy:alpine
+    user: "root"
     ports:
       - "9999:9999"
     volumes:
