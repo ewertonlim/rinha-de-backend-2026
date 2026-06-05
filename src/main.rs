@@ -8,8 +8,7 @@ use actix_web::{web, App, HttpResponse, HttpServer};
 use models::{FraudRequest, FraudResponse, NormalizationConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::sync::Arc;
 
 /// Shared application state across all request handlers.
 struct AppState {
@@ -19,14 +18,7 @@ struct AppState {
     nprobe: usize,
 }
 
-// --- Instrumentation counters ---
-static REQ_COUNT: AtomicU64 = AtomicU64::new(0);
-static TOTAL_VECTORIZE_US: AtomicU64 = AtomicU64::new(0);
-static TOTAL_SEARCH_US: AtomicU64 = AtomicU64::new(0);
-static TOTAL_DECIDE_US: AtomicU64 = AtomicU64::new(0);
-static TOTAL_US: AtomicU64 = AtomicU64::new(0);
 
-const METRICS_INTERVAL: u64 = 5000;
 
 /// GET /ready — readiness probe
 async fn ready() -> HttpResponse {
@@ -37,48 +29,19 @@ async fn fraud_score(
     state: web::Data<Arc<AppState>>,
     body: web::Bytes,
 ) -> HttpResponse {
-    let t_start = Instant::now();
-
     let req: FraudRequest = match serde_json::from_slice(&body) {
         Ok(req) => req,
         Err(_) => return HttpResponse::BadRequest().finish(),
     };
 
     // 1. Vectorize the request payload into 14 dimensions
-    let t0 = Instant::now();
     let query = vectorize::vectorize(&req, &state.norm, &state.mcc_risk);
-    let vectorize_us = t0.elapsed().as_micros() as u64;
 
     // 2. IVF KNN search
-    let t1 = Instant::now();
     let result = search::knn_search(&query, &state.index, state.nprobe);
-    let search_us = t1.elapsed().as_micros() as u64;
 
     // 3. Decide approved/denied based on fraud_score
-    let t2 = Instant::now();
     let (approved, fraud_score) = decision::decide(&result);
-    let decide_us = t2.elapsed().as_micros() as u64;
-
-    let total_us = t_start.elapsed().as_micros() as u64;
-
-    // Accumulate metrics (Relaxed ordering for minimal overhead)
-    TOTAL_VECTORIZE_US.fetch_add(vectorize_us, Ordering::Relaxed);
-    TOTAL_SEARCH_US.fetch_add(search_us, Ordering::Relaxed);
-    TOTAL_DECIDE_US.fetch_add(decide_us, Ordering::Relaxed);
-    TOTAL_US.fetch_add(total_us, Ordering::Relaxed);
-    let count = REQ_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-
-    // Log metrics periodically
-    if count % METRICS_INTERVAL == 0 {
-        let avg_vec = TOTAL_VECTORIZE_US.swap(0, Ordering::Relaxed) / METRICS_INTERVAL;
-        let avg_search = TOTAL_SEARCH_US.swap(0, Ordering::Relaxed) / METRICS_INTERVAL;
-        let avg_decide = TOTAL_DECIDE_US.swap(0, Ordering::Relaxed) / METRICS_INTERVAL;
-        let avg_total = TOTAL_US.swap(0, Ordering::Relaxed) / METRICS_INTERVAL;
-        eprintln!(
-            "[METRICS] reqs={} avg_total={}µs avg_vectorize={}µs avg_search={}µs avg_decide={}µs",
-            count, avg_total, avg_vec, avg_search, avg_decide
-        );
-    }
 
     // 4. Return response
     HttpResponse::Ok().json(FraudResponse {

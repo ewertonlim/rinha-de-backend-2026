@@ -1,10 +1,10 @@
 services:
-  nginx:
-    image: nginx:alpine
+  haproxy:
+    image: haproxy:alpine
     ports:
       - "9999:9999"
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
       api1:
         condition: service_healthy
@@ -26,9 +26,9 @@ services:
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
-      - NPROBE=2
+      - NPROBE=10
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready" ]
       interval: 2s
       timeout: 2s
       retries: 30
@@ -49,9 +49,9 @@ services:
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
-      - NPROBE=2
+      - NPROBE=10
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready" ]
       interval: 2s
       timeout: 2s
       retries: 30
