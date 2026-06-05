@@ -169,8 +169,7 @@ async fn main() -> std::io::Result<()> {
             )
             .route("/ready", web::get().to(ready))
             .route("/fraud-score", web::post().to(fraud_score))
-    })
-    .workers(1);
+    });
 
     #[cfg(unix)]
     {
