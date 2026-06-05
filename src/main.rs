@@ -150,6 +150,12 @@ async fn main() -> std::io::Result<()> {
     if let Some(ref path) = api_socket {
         eprintln!("Starting server on unix socket {}", path);
         let _ = std::fs::remove_file(path);
+        
+        // Ensure parent directory is accessible by nginx user
+        if let Some(parent) = std::path::Path::new(path).parent() {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));
+        }
     } else {
         eprintln!("Starting server on port {}", port);
     }
