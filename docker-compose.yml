@@ -26,7 +26,7 @@ services:
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
-      - NPROBE=1
+      - NPROBE=2
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
       interval: 2s
@@ -49,7 +49,7 @@ services:
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
-      - NPROBE=1
+      - NPROBE=2
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready"]
       interval: 2s

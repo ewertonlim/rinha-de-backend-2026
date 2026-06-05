@@ -41,8 +41,8 @@ struct JsonRecord {
 
 // --- K-means ---
 
-const N_CLUSTERS: usize = 256;
-const K_MEANS_ITERS: usize = 20;
+const N_CLUSTERS: usize = 1024;
+const K_MEANS_ITERS: usize = 12;
 
 /// Compute squared L2 distance between two i16 vectors (first 14 dims).
 /// Uses i32 arithmetic to avoid overflow.

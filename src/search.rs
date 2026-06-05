@@ -115,6 +115,10 @@ pub fn knn_search(
             let mut i = 0;
             while i < count {
                 let idx = start + i;
+                // Prefetch 4 vectors ahead to hide L2→L1 latency
+                if i + 4 < count {
+                    _mm_prefetch::<_MM_HINT_T0>(all_records_ptr.add(idx + 4) as *const i8);
+                }
                 let d_sq = simd_distance_sq(q, all_records_ptr.add(idx));
                 if d_sq < heap_max {
                     insert_heap(&mut heap, &mut heap_max, d_sq, *all_labels_ptr.add(idx));

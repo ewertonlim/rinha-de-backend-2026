@@ -188,6 +188,6 @@ async fn main() -> std::io::Result<()> {
         server = server.bind(("0.0.0.0", port))?;
     }
 
-    server.run()
+    server.workers(1).run()
     .await
 }
