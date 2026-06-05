@@ -152,6 +152,7 @@ async fn main() -> std::io::Result<()> {
         let _ = std::fs::remove_file(path);
         
         // Ensure parent directory is accessible by nginx user
+        #[cfg(unix)]
         if let Some(parent) = std::path::Path::new(path).parent() {
             use std::os::unix::fs::PermissionsExt;
             let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o777));

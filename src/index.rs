@@ -34,7 +34,7 @@ unsafe impl Sync for VectorIndex {}
 impl VectorIndex {
     pub fn load<P: AsRef<Path>>(path: P) -> std::io::Result<Self> {
         let file = File::open(path)?;
-        let mmap = unsafe { Mmap::map(&file)? };
+        let mmap = unsafe { memmap2::MmapOptions::new().populate().map(&file)? };
 
         let header_size = std::mem::size_of::<IndexHeader>();
         assert!(mmap.len() >= header_size, "Index file too small for header");
