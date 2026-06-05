@@ -20,6 +20,7 @@ services:
 
   api1:
     image: ewertonlim/rinha-api:latest
+    image: ewertonlim/rinha-api:latest
     hostname: api1
     environment:
       - PORT=8080
@@ -42,6 +43,7 @@ services:
       - rinha
 
   api2:
+    image: ewertonlim/rinha-api:latest
     image: ewertonlim/rinha-api:latest
     hostname: api2
     environment:
