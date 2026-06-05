@@ -22,14 +22,13 @@ services:
   api1:
     image: ewertonlim/rinha-api:latest
     hostname: api1
-    network_mode: "none"
     environment:
       - PORT=8080
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - API_SOCKET=/sockets/api1.sock
-      - NPROBE=2
+      - NPROBE=1
     volumes:
       - sockets:/sockets
     healthcheck:
@@ -47,14 +46,13 @@ services:
   api2:
     image: ewertonlim/rinha-api:latest
     hostname: api2
-    network_mode: "none"
     environment:
       - PORT=8080
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - API_SOCKET=/sockets/api2.sock
-      - NPROBE=2
+      - NPROBE=1
     volumes:
       - sockets:/sockets
     healthcheck:
