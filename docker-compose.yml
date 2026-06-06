@@ -8,9 +8,9 @@ services:
       - sockets:/tmp/sockets
     depends_on:
       api1:
-        condition: service_healthy
+        condition: service_started
       api2:
-        condition: service_healthy
+        condition: service_started
     deploy:
       resources:
         limits:
@@ -31,12 +31,6 @@ services:
       - NPROBE=10
     volumes:
       - sockets:/tmp/sockets
-    healthcheck:
-      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready" ]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
     deploy:
       resources:
         limits:
@@ -57,12 +51,6 @@ services:
       - NPROBE=10
     volumes:
       - sockets:/tmp/sockets
-    healthcheck:
-      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/ready" ]
-      interval: 2s
-      timeout: 2s
-      retries: 30
-      start_period: 5s
     deploy:
       resources:
         limits:
