@@ -1,36 +1,16 @@
 services:
-  haproxy:
-    image: haproxy:alpine
-    ports:
-      - "9999:9999"
-    volumes:
-      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
-      - sockets:/tmp/sockets
-    depends_on:
-      api1:
-        condition: service_started
-      api2:
-        condition: service_started
-    deploy:
-      resources:
-        limits:
-          cpus: "0.30"
-          memory: "30MB"
-    networks:
-      - rinha
-
   api1:
     image: ewertonlim/rinha-api:latest
     hostname: api1
     environment:
       - PORT=8080
-      - API_SOCKET=/tmp/sockets/api1.sock
+      - API_SOCKET=/sockets/api1.sock
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - NPROBE=10
     volumes:
-      - sockets:/tmp/sockets
+      - sockets:/sockets
     deploy:
       resources:
         limits:
@@ -44,18 +24,35 @@ services:
     hostname: api2
     environment:
       - PORT=8080
-      - API_SOCKET=/tmp/sockets/api2.sock
+      - API_SOCKET=/sockets/api2.sock
       - INDEX_PATH=/data/index.bin
       - NORM_PATH=/data/normalization.json
       - MCC_PATH=/data/mcc_risk.json
       - NPROBE=10
     volumes:
-      - sockets:/tmp/sockets
+      - sockets:/sockets
     deploy:
       resources:
         limits:
           cpus: "0.35"
           memory: "160MB"
+    networks:
+      - rinha
+  haproxy:
+    image: haproxy:alpine
+    ports:
+      - "9999:9999"
+    volumes:
+      - ./haproxy/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - sockets:/sockets
+    depends_on:
+      - api1
+      - api2
+    deploy:
+      resources:
+        limits:
+          cpus: "0.30"
+          memory: "30MB"
     networks:
       - rinha
 
